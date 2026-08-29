@@ -1,0 +1,110 @@
+[build-system]
+requires = ["setuptools>=82.0.1", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "voiceguard"
+version = "1.0.0"
+description = "Real-time voice deepfake detection, synthesis watermarking, and vishing defence platform"
+license = {text = "Apache-2.0"}
+requires-python = ">=3.12"
+readme = "README.md"
+keywords = [
+  "deepfake-detection", "voice-deepfake", "audio-deepfake", "anti-spoofing",
+  "asvspoof", "speech", "vishing", "ai-security", "wav2vec2", "xls-r",
+  "aasist", "explainable-ai", "fastapi", "pytorch", "onnx",
+]
+authors = [
+  {name = "Mohammad Thabet Hassan", email = "MohammadThabetHassan@users.noreply.github.com"},
+  {name = "Fahad Sadek Al-Jazzeri",  email = "fahadALjazzeri@users.noreply.github.com"},
+  {name = "Ahmed Sami Alameri",       email = "AhmedSamiAlameri@users.noreply.github.com"},
+]
+
+dependencies = [
+  # Deep learning
+  "torch>=2.1.0",
+  "torchaudio>=2.1.0",
+  # Audio processing
+  "librosa>=0.10.1",
+  "soundfile>=0.12.1",
+  # Classical ML
+  "scikit-learn>=1.4.0",
+  "xgboost>=3.2.0",
+  "joblib>=1.3.2",
+  # NLP / transformers
+  "transformers>=4.37.0",
+  # API
+  "fastapi>=0.104.0",
+  "uvicorn[standard]>=0.25.0",
+  "python-multipart>=0.0.6",
+  "python-jose[cryptography]>=3.3.0",
+  "slowapi>=0.1.9",
+  "pydantic>=2.5.0",
+  "pydantic-settings>=2.1.0",
+  "httpx>=0.26.0",
+  # XAI
+  "captum>=0.9.0",
+  "shap>=0.44.0",
+  # Forensics
+  "reportlab>=4.0.0",
+  # ONNX
+  "onnx>=1.15.0",
+  "onnxruntime>=1.17.0",
+  # Data
+  "numpy>=2.4.6",
+  "pandas>=2.1.0",
+  "scipy>=1.11.0",
+]
+# Removed as unused by src/ (verified by import grep): webrtcvad (needs gcc to
+# build), datasets, matplotlib — together they were a large chunk of install
+# time and Docker image size.
+
+[project.optional-dependencies]
+# True C2PA provenance signing for synthesized audio. Optional: the API degrades
+# to spectral-watermark-only when absent. Pinned — this wrapper's cert handling is
+# verified against VoiceGuard's self-signed ES256 profile (see watermark/c2pa_sign).
+provenance = [
+  "c2pa-python==0.32.12",
+]
+dev = [
+  "pytest>=7.4.0",
+  "pytest-asyncio>=0.23.0",
+  "pytest-cov>=7.1.0",
+  "ruff>=0.1.0",
+  "black>=23.12.0",
+  "bandit>=1.7.6",
+]
+
+[project.urls]
+Homepage = "https://github.com/MohammadThabetHassan/VoiceGuard"
+Repository = "https://github.com/MohammadThabetHassan/VoiceGuard"
+Issues = "https://github.com/MohammadThabetHassan/VoiceGuard/issues"
+Changelog = "https://github.com/MohammadThabetHassan/VoiceGuard/blob/main/CHANGELOG.md"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+src = ["src"]
+# Drop-in scripts for external runtimes (e.g. IPED's jep) follow those tools'
+# conventions (camelCase API methods, injected globals), not this repo's style.
+extend-exclude = ["integrations"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "N", "UP", "S", "B", "A"]
+ignore = ["S101", "S603", "S607", "N803", "N806", "B008"]
+
+[tool.black]
+line-length = 100
+target-version = ["py312"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "--tb=short -q"
+asyncio_mode = "auto"
+
+[tool.bandit]
+targets = ["src"]
+skips = ["B101", "B311", "B404", "B603", "B607"]

@@ -1,0 +1,45 @@
+name: Deploy VoiceGuard to Server
+
+# Self-hosted deployment: SSH into the server and run deploy/update.sh
+# (git pull -> rebuild frontend -> restart the systemd backend).
+#
+# Manual-only (workflow_dispatch) on purpose. The push trigger is intentionally
+# NOT enabled until the server + secrets exist, so that ordinary pushes keep CI
+# green instead of failing on a missing server. To enable auto-deploy on push,
+# add the secrets below, then uncomment the `push:` block.
+#
+# Required repo secrets (Settings -> Secrets and variables -> Actions):
+#   SERVER_IP       public IP or domain of the server
+#   SERVER_USER     Linux user that owns ~/voiceguard
+#   SERVER_SSH_KEY  the private SSH key (contents of ~/.ssh/id_rsa)
+on:
+  workflow_dispatch:
+  # push:
+  #   branches: [main]
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Verify deploy secrets are configured
+        env:
+          SERVER_IP: ${{ secrets.SERVER_IP }}
+          SERVER_USER: ${{ secrets.SERVER_USER }}
+          SERVER_SSH_KEY: ${{ secrets.SERVER_SSH_KEY }}
+        run: |
+          if [ -z "$SERVER_IP" ] || [ -z "$SERVER_USER" ] || [ -z "$SERVER_SSH_KEY" ]; then
+            echo "::error::SERVER_IP / SERVER_USER / SERVER_SSH_KEY secrets are not set."
+            echo "Add them in repo Settings -> Secrets and variables -> Actions, then re-run."
+            exit 1
+          fi
+          echo "Deploy secrets present."
+
+      - name: SSH and update server
+        uses: appleboy/ssh-action@v1.2.5
+        with:
+          host: ${{ secrets.SERVER_IP }}
+          username: ${{ secrets.SERVER_USER }}
+          key: ${{ secrets.SERVER_SSH_KEY }}
+          script: |
+            cd ~/voiceguard
+            bash deploy/update.sh

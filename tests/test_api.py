@@ -1,0 +1,381 @@
+"""
+FastAPI endpoint tests.
+
+Uses httpx.AsyncClient with ASGI transport — no network calls.
+"""
+
+from __future__ import annotations
+
+import io
+import wave
+
+import numpy as np
+import pytest
+from httpx import ASGITransport, AsyncClient
+
+from voiceguard.api.main import app
+
+
+def make_wav_bytes(duration_s: float = 1.0, sr: int = 16000) -> bytes:
+    """Create a minimal valid WAV file in memory."""
+    samples = (np.random.randn(int(sr * duration_s)) * 0.1 * 32767).astype(np.int16)
+    buf = io.BytesIO()
+    with wave.open(buf, "wb") as wf:
+        wf.setnchannels(1)
+        wf.setsampwidth(2)
+        wf.setframerate(sr)
+        wf.writeframes(samples.tobytes())
+    return buf.getvalue()
+
+
+@pytest.fixture
+def wav_bytes():
+    return make_wav_bytes()
+
+
+async def get_token(client: AsyncClient) -> str:
+    resp = await client.post(
+        "/token",
+        data={"username": "admin", "password": "voiceguard2026"},  # pragma: allowlist secret
+        headers={"Content-Type": "application/x-www-form-urlencoded"},
+    )
+    assert resp.status_code == 200, resp.text
+    return resp.json()["access_token"]
+
+
+@pytest.fixture
+async def auth_client():
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        token = await get_token(client)
+        client.headers["Authorization"] = f"Bearer {token}"
+        yield client
+
+
+# ── Auth tests ─────────────────────────────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_token_valid_credentials():
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        resp = await client.post(
+            "/token",
+            data={"username": "admin", "password": "voiceguard2026"},  # pragma: allowlist secret
+            headers={"Content-Type": "application/x-www-form-urlencoded"},
+        )
+    assert resp.status_code == 200
+    data = resp.json()
+    assert "access_token" in data
+    assert data["token_type"] == "bearer"  # noqa: S105
+
+
+@pytest.mark.asyncio
+async def test_token_invalid_credentials():
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        resp = await client.post(
+            "/token",
+            data={"username": "wrong", "password": "wrong"},  # pragma: allowlist secret
+            headers={"Content-Type": "application/x-www-form-urlencoded"},
+        )
+    assert resp.status_code == 401
+
+
+@pytest.mark.asyncio
+async def test_detect_requires_auth(wav_bytes):
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        resp = await client.post(
+            "/detect",
+            files={"file": ("test.wav", wav_bytes, "audio/wav")},
+        )
+    assert resp.status_code == 401
+
+
+# ── Detection tests ────────────────────────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_detect_wav(auth_client, wav_bytes):
+    # Use the lightweight classical detector — the SSL default (xls_r_aasist)
+    # needs a ~1.2GB checkpoint that is not present in CI.
+    resp = await auth_client.post(
+        "/detect",
+        files={"file": ("test.wav", wav_bytes, "audio/wav")},
+        params={"model": "classical"},
+    )
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["label"] in ("real", "fake")
+    assert 0.0 <= data["confidence"] <= 1.0
+    assert data["model"] == "classical"
+    assert data["latency_ms"] >= 0
+    assert len(data["audio_hash"]) == 64  # SHA-256 hex
+
+
+@pytest.mark.asyncio
+async def test_detect_model_field(auth_client, wav_bytes):
+    resp = await auth_client.post(
+        "/detect",
+        files={"file": ("test.wav", wav_bytes, "audio/wav")},
+        params={"model": "classical"},
+    )
+    assert resp.status_code == 200
+
+
+@pytest.mark.asyncio
+async def test_detect_model_without_checkpoint(auth_client, wav_bytes):
+    resp = await auth_client.post(
+        "/detect",
+        files={"file": ("test.wav", wav_bytes, "audio/wav")},
+        params={"model": "dsfnet"},
+    )
+    assert resp.status_code == 503
+
+
+# ── Health test ────────────────────────────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_health():
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        resp = await client.get("/health")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["status"] == "ok"
+    assert "version" in data
+    assert "models_loaded" in data
+
+
+# ── Explain endpoint ──────────────────────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_explain_classical_uses_occlusion(auth_client, wav_bytes):
+    resp = await auth_client.post(
+        "/explain",
+        files={"file": ("test.wav", wav_bytes, "audio/wav")},
+        params={"model": "classical"},
+    )
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["method"] == "occlusion"
+    assert body["baseline"] == "silence"
+    assert body["frame_duration_ms"] == 10
+    assert body["attribution_frames"]
+    assert all(0.0 <= f <= 1.0 for f in body["attribution_frames"])
+
+
+@pytest.mark.asyncio
+async def test_explain_missing_checkpoint_returns_503(auth_client, wav_bytes):
+    resp = await auth_client.post(
+        "/explain",
+        files={"file": ("test.wav", wav_bytes, "audio/wav")},
+        params={"model": "dsfnet"},
+    )
+    assert resp.status_code == 503
+
+
+# ── Synthesis / forensics ──────────────────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_synthesis_engines_lists_kokoro_and_clone(auth_client):
+    resp = await auth_client.get("/synthesis/engines")
+    assert resp.status_code == 200
+    names = {e["name"] for e in resp.json()}
+    assert "kokoro" in names
+    assert {"indextts2", "xtts"} <= names  # cloning engines listed (may be unavailable)
+
+
+@pytest.mark.asyncio
+async def test_synthesize_kokoro(auth_client, monkeypatch):
+    # Stub Kokoro so the contract is tested without the TTS model in CI.
+    import numpy as np
+
+    from voiceguard.synthesis import kokoro_engine
+
+    monkeypatch.setattr(kokoro_engine.KokoroEngine, "is_available", lambda self: True)
+    monkeypatch.setattr(
+        kokoro_engine,
+        "synthesize_raw",
+        lambda text, voice="af_heart", language="en": (np.zeros(16000, dtype=np.float32), 16000),
+    )
+    resp = await auth_client.post("/synthesize", data={"text": "Hello world", "engine": "kokoro"})
+    assert resp.status_code == 200, resp.text
+    data = resp.json()
+    assert data["engine"] == "kokoro"
+    assert data["audio_url"].endswith(".wav")
+    assert data["watermark_id"]
+
+
+@pytest.mark.asyncio
+async def test_synthesize_unavailable_engine_501(auth_client, monkeypatch):
+    # Force the cloning engine unavailable so the assertion holds regardless of
+    # whether this host happens to have the (optional, multi-GB) engine installed.
+    from voiceguard.synthesis import clone_engine
+
+    monkeypatch.setattr(clone_engine.IndexTTS2Engine, "is_available", lambda self: False)
+    resp = await auth_client.post("/synthesize", data={"text": "hi", "engine": "indextts2"})
+    assert resp.status_code == 501
+
+
+@pytest.mark.asyncio
+async def test_synthesize_clone_no_consent_403(auth_client, monkeypatch):
+    # Cloning engine available but consent not given → 403 (server-side gate, P0-9).
+    from voiceguard.synthesis import clone_engine
+
+    monkeypatch.setattr(clone_engine.IndexTTS2Engine, "is_available", lambda self: True)
+    resp = await auth_client.post(
+        "/synthesize", data={"text": "hi", "engine": "indextts2", "consent": "false"}
+    )
+    assert resp.status_code == 403
+
+
+@pytest.mark.asyncio
+async def test_synthesize_clone_requires_reference_422(auth_client, monkeypatch):
+    # Consent given but no reference clip → 422.
+    from voiceguard.synthesis import clone_engine
+
+    monkeypatch.setattr(clone_engine.IndexTTS2Engine, "is_available", lambda self: True)
+    resp = await auth_client.post(
+        "/synthesize", data={"text": "hi", "engine": "indextts2", "consent": "true"}
+    )
+    assert resp.status_code == 422
+
+
+async def _detect_classical(client, wav_bytes) -> str:
+    """Run a classical detection and return its audio_hash (server records it)."""
+    resp = await client.post(
+        "/detect",
+        files={"file": ("test.wav", wav_bytes, "audio/wav")},
+        params={"model": "classical"},
+    )
+    assert resp.status_code == 200, resp.text
+    return resp.json()["audio_hash"]
+
+
+@pytest.mark.asyncio
+async def test_forensic_report_uses_server_record(auth_client, wav_bytes):
+    # A report can only be built from a server-verified detection (P0-10).
+    audio_hash = await _detect_classical(auth_client, wav_bytes)
+    resp = await auth_client.post("/forensic/report", json={"audio_hash": audio_hash})
+    assert resp.status_code == 200, resp.text
+    data = resp.json()
+    assert data["report_url"].endswith(".pdf")
+    assert len(data["chain_of_custody_hash"]) == 64  # SHA-256 hex
+
+
+@pytest.mark.asyncio
+async def test_forensic_report_unknown_hash_404(auth_client):
+    # No server-side detection record for this hash → 404, not a forged report.
+    resp = await auth_client.post("/forensic/report", json={"audio_hash": "f" * 64})
+    assert resp.status_code == 404
+
+
+# ── Upload validation / format support (P0-3, P0-7) ─────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_detect_rejects_text_file_415(auth_client):
+    resp = await auth_client.post(
+        "/detect",
+        files={"file": ("notes.txt", b"not audio", "text/plain")},
+        params={"model": "classical"},
+    )
+    assert resp.status_code == 415
+
+
+@pytest.mark.asyncio
+async def test_detect_classical_flac(auth_client):
+    import io
+
+    import soundfile as sf
+
+    buf = io.BytesIO()
+    sf.write(buf, (np.random.randn(16000) * 0.1).astype(np.float32), 16000, format="FLAC")
+    resp = await auth_client.post(
+        "/detect",
+        files={"file": ("a.flac", buf.getvalue(), "audio/flac")},
+        params={"model": "classical"},
+    )
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["label"] in ("real", "fake")
+
+
+@pytest.mark.asyncio
+async def test_upload_too_large_413(auth_client, wav_bytes, monkeypatch):
+    from voiceguard.api import main as m
+
+    monkeypatch.setattr(m, "MAX_FILE_SIZE_BYTES", 16)  # smaller than wav_bytes
+    resp = await auth_client.post(
+        "/detect",
+        files={"file": ("test.wav", wav_bytes, "audio/wav")},
+        params={"model": "classical"},
+    )
+    assert resp.status_code == 413
+
+
+# ── Single-pass detection (long clips) ──────────────────────────────────────────
+# Sliding-window aggregations (max, then mean) both misclassified real recordings:
+# mid-utterance windows are out-of-distribution for the SSL detector. A long clip
+# is now scored in ONE pass from its natural start (capped at VG_SCORE_SECONDS).
+
+
+def test_score_cap_is_sane():
+    from voiceguard.api.main import _SCORE_MAX_S, _WIN
+
+    assert _SCORE_MAX_S * 16000 >= _WIN  # cap can never go below the 3s minimum
+
+
+@pytest.mark.asyncio
+async def test_detect_long_clip_windows(auth_client, monkeypatch):
+    """A 10s clip is scored in a single full-clip pass from its natural start."""
+    import io
+    import wave
+
+    import torch
+
+    from voiceguard.api import main as m
+
+    class _AllFake:
+        def __call__(self, x):  # x: (B, T) → (B, 2) logits favouring 'fake'
+            return torch.tensor([[0.0, 6.0]] * x.shape[0])
+
+    monkeypatch.setattr(m.registry, "load", lambda key: _AllFake())
+
+    sr = 16000
+    samples = (np.random.randn(sr * 10) * 0.1 * 32767).astype(np.int16)
+    buf = io.BytesIO()
+    with wave.open(buf, "wb") as wf:
+        wf.setnchannels(1)
+        wf.setsampwidth(2)
+        wf.setframerate(sr)
+        wf.writeframes(samples.tobytes())
+
+    resp = await auth_client.post(
+        "/detect",
+        files={"file": ("long.wav", buf.getvalue(), "audio/wav")},
+        params={"model": "xls_r_aasist"},
+    )
+    assert resp.status_code == 200, resp.text
+    data = resp.json()
+    assert data["windows_analyzed"] == 1  # one full-clip pass, no sliding windows
+    assert data["label"] == "fake"
+
+
+# ── /token brute-force rate limit (P0-6) ────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_token_rate_limited():
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        codes = []
+        for _ in range(7):
+            r = await client.post(
+                "/token",
+                data={
+                    "username": "admin",
+                    "password": "voiceguard2026",
+                },  # pragma: allowlist secret
+                headers={"Content-Type": "application/x-www-form-urlencoded"},
+            )
+            codes.append(r.status_code)
+    assert 429 in codes  # 6th rapid attempt is throttled (limit 5/minute)
