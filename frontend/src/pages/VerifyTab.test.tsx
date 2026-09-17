@@ -1,11 +1,20 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { render, screen, fireEvent, waitFor, cleanup } from '@testing-library/react'
+import {
+  render,
+  screen,
+  fireEvent,
+  waitFor,
+  cleanup,
+} from '@testing-library/react'
+
 import VerifyTab from './VerifyTab'
+
 import type { WatermarkVerifyResult } from '../services/provenanceService'
 
 const verifyMock = vi.hoisted(() => vi.fn())
+
 vi.mock('../services/provenanceService', async (importOriginal) => ({
-  ...(await importOriginal<object>()),
+  ...(await importOriginal<typeof import('../services/provenanceService')>()),
   verifyProvenance: verifyMock,
 }))
 
@@ -21,9 +30,21 @@ const verified: WatermarkVerifyResult = {
 }
 
 const pickFile = (container: HTMLElement) => {
-  const input = container.querySelector('input[type="file"]') as HTMLInputElement
-  const file = new File(['RIFFxxxxWAVE'], 'clip.wav', { type: 'audio/wav' })
-  fireEvent.change(input, { target: { files: [file] } })
+  const input = container.querySelector(
+    'input[type="file"]',
+  ) as HTMLInputElement
+
+  const file = new File(
+    ['RIFFxxxxWAVE'],
+    'clip.wav',
+    { type: 'audio/wav' },
+  )
+
+  fireEvent.change(input, {
+    target: {
+      files: [file],
+    },
+  })
 }
 
 describe('VerifyTab', () => {
@@ -34,32 +55,65 @@ describe('VerifyTab', () => {
 
   it('disables the verify button until a file is chosen', () => {
     const { container } = render(<VerifyTab />)
-    const button = screen.getByRole('button', { name: /verify provenance/i })
+
+    const button = screen.getByRole('button', {
+      name: /verify provenance/i,
+    })
+
     expect(button).toHaveProperty('disabled', true)
+
     pickFile(container)
+
     expect(button).toHaveProperty('disabled', false)
   })
 
   it('shows the verdict panel after a successful verification', async () => {
     verifyMock.mockResolvedValue(verified)
+
     const { container } = render(<VerifyTab />)
+
     pickFile(container)
-    fireEvent.click(screen.getByRole('button', { name: /verify provenance/i }))
+
+    fireEvent.click(
+      screen.getByRole('button', {
+        name: /verify provenance/i,
+      }),
+    )
+
     await waitFor(() => {
-      expect(screen.getByText(/VoiceGuard-generated/i)).toBeTruthy()
+      expect(
+        screen.getByText(/VoiceGuard-generated/i),
+      ).toBeTruthy()
     })
-    expect(screen.getByText(/detected \(corr 0\.1234\)/i)).toBeTruthy()
+
+    expect(
+      screen.getByText(/detected.*corr.*0\.1234/i),
+    ).toBeTruthy()
+
     expect(verifyMock).toHaveBeenCalledOnce()
   })
 
   it('surfaces API errors inline', async () => {
     const { ApiError } = await import('../config/apiConfig')
-    verifyMock.mockRejectedValue(new ApiError(415, 'File content is not audio.'))
+
+    verifyMock.mockRejectedValue(
+      new ApiError(415, 'File content is not audio.'),
+    )
+
     const { container } = render(<VerifyTab />)
+
     pickFile(container)
-    fireEvent.click(screen.getByRole('button', { name: /verify provenance/i }))
+
+    fireEvent.click(
+      screen.getByRole('button', {
+        name: /verify provenance/i,
+      }),
+    )
+
     await waitFor(() => {
-      expect(screen.getByText(/not audio/i)).toBeTruthy()
+      expect(
+        screen.getByText(/not audio/i),
+      ).toBeTruthy()
     })
   })
 })

@@ -3,17 +3,26 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
+
     ports:
       - "8000:8000"
+
     environment:
       - SECRET_KEY=${SECRET_KEY:-dev-secret-changeme-in-production}
       - VG_ENV=${VG_ENV:-development}
       - PDPL_MAX_AGE_SECONDS=${PDPL_MAX_AGE_SECONDS:-60}
       - XLS_R_AASIST_PATH=${XLS_R_AASIST_PATH:-}
+      - AASIST_MODEL_PATH=/app/checkpoints/aasist_official/AASIST.pth
       - TWILIO_AUTH_TOKEN=${TWILIO_AUTH_TOKEN:-}
       - HF_TOKEN=${HF_TOKEN:-}
+      - LIVEKIT_URL=${LIVEKIT_URL:-ws://localhost:7880}
+      - LIVEKIT_API_KEY=${LIVEKIT_API_KEY:-devkey}
+      - LIVEKIT_API_SECRET=${LIVEKIT_API_SECRET:-secret}
+
     volumes:
       - ./checkpoints:/app/checkpoints:ro
+      - ./data/verified_training:/app/data/verified_training
+
     healthcheck:
       test:
         [
@@ -30,17 +39,40 @@ services:
     build:
       context: ./frontend
       dockerfile: Dockerfile
+
     ports:
       - "5173:80"
+
     depends_on:
       - backend
 
   nginx:
     image: nginx:alpine
+
     ports:
       - "80:80"
+
     volumes:
       - ./nginx.conf:/etc/nginx/conf.d/default.conf:ro
+
     depends_on:
       - backend
       - frontend
+
+  livekit:
+    image: livekit/livekit-server:latest
+
+    command:
+      - --dev
+      - --config
+      - /etc/livekit.yaml
+      - --bind
+      - 0.0.0.0
+
+    volumes:
+      - ./livekit.yaml:/etc/livekit.yaml:ro
+
+    ports:
+      - "7880:7880"
+      - "7881:7881"
+      - "50000-50010:50000-50010/udp"

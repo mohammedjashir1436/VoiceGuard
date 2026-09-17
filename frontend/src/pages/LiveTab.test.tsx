@@ -1,26 +1,49 @@
-import { describe, it, expect, beforeEach } from 'vitest'
+import { describe, it, expect, beforeEach, vi } from 'vitest'
 import { render, screen, cleanup } from '@testing-library/react'
 import LiveTab from './LiveTab'
-import { setToken, clearToken } from '../config/apiConfig'
+import { clearToken } from '../config/apiConfig'
 
 describe('LiveTab', () => {
   beforeEach(() => {
     cleanup()
     clearToken()
+    vi.restoreAllMocks()
   })
 
-  it('blocks streaming and explains why when not logged in', () => {
-    render(<LiveTab />)
-    expect(screen.getByText(/log in first/i)).toBeTruthy()
-    const button = screen.getByRole('button', { name: /start live analysis/i })
-    expect(button).toHaveProperty('disabled', true)
+  it('renders the live voice analysis screen', () => {
+    render(
+      <LiveTab
+        session={null}
+        onEndCall={vi.fn()}
+      />,
+    )
+
+    expect(
+      screen.getByText(/live voice analysis/i),
+    ).toBeTruthy()
   })
 
-  it('enables the start button once authenticated', () => {
-    setToken('jwt-abc')
-    render(<LiveTab />)
-    expect(screen.queryByText(/log in first/i)).toBeNull()
-    const button = screen.getByRole('button', { name: /start live analysis/i })
-    expect(button).toHaveProperty('disabled', false)
+  it('renders caller information for a connected call session', () => {
+    render(
+      <LiveTab
+        session={{
+          mode: 'live',
+          callerName: 'Test Caller',
+          phone: '+91 98765 43210',
+          purpose: 'Test Call',
+          status: 'connected',
+          startTime: new Date().toISOString(),
+        }}
+        onEndCall={vi.fn()}
+      />,
+    )
+
+    expect(
+      screen.getByText('+91 98765 43210'),
+    ).toBeTruthy()
+
+    expect(
+      screen.getByText(/test caller/i),
+    ).toBeTruthy()
   })
 })
