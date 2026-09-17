@@ -61,7 +61,7 @@ dependencies = [
   "c2pa-python>=0.37.8",
 
   # ONNX
-  "onnx>=1.15.0",
+  "onnx>=1.22.0",
   "onnxruntime>=1.17.0",
 
   # Data
