@@ -28,7 +28,7 @@ dependencies = [
 
   # Audio processing
   "librosa>=0.10.1",
-  "soundfile>=0.12.1",
+  "soundfile>=0.14.0",
   "kokoro>=0.9.4",
 
   # Classical ML
